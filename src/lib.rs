@@ -15,14 +15,14 @@ pub trait InputPinNotify: InputPin + Pin {
     ///
     /// The callback passed to this method is executed in the context of an
     /// interrupt handler. So you should take care of what is done in it.
-    unsafe fn subscribe(self, callback: impl for<'a> FnMut() + 'static) -> Result<PinNotifySubscription<Self>, EspError> where Self: Sized;
+    unsafe fn subscribe(&self, callback: impl for<'a> FnMut() + 'static) -> Result<PinNotifySubscription, EspError> where Self: Sized;
 }
 
 macro_rules! impl_input_pin_notify {
     ($pin:ty) => {
         impl InputPinNotify for $pin {
-            unsafe fn subscribe(self, callback: impl for<'a> FnMut() + 'static) -> Result<PinNotifySubscription<$pin>, EspError> {
-                PinNotifySubscription::subscribe(self, callback)
+            unsafe fn subscribe(&self, callback: impl for<'a> FnMut() + 'static) -> Result<PinNotifySubscription, EspError> {
+                PinNotifySubscription::subscribe(self.pin(), callback)
             }
         }
     }
@@ -63,17 +63,16 @@ type ClosureBox = Box<Box<dyn for<'a> FnMut()>>;
 /// The PinNotifySubscription represents the association between an InputPin and
 /// a registered isr handler.
 /// When the PinNotifySubscription is dropped, the isr handler is unregistered.
-pub struct PinNotifySubscription<P: Pin + InputPin>(P, ClosureBox);
+pub struct PinNotifySubscription(i32, ClosureBox);
 
 static ISR_SERVICE_ENABLED: AtomicBool = AtomicBool::new(false);
 
-impl<P: InputPin + Pin> PinNotifySubscription<P> {
-    fn subscribe(pin: P, callback: impl for<'a> FnMut() + 'static) -> Result<Self, EspError> {
+impl PinNotifySubscription {
+    fn subscribe(pin_number: i32, callback: impl for<'a> FnMut() + 'static) -> Result<Self, EspError> {
         if !ISR_SERVICE_ENABLED.load(std::sync::atomic::Ordering::SeqCst) {
             enable_isr_service()?;
             ISR_SERVICE_ENABLED.store(true, std::sync::atomic::Ordering::SeqCst);
         }
-        let pin_number: i32 = pin.pin();
 
         esp!(unsafe { esp_idf_sys::rtc_gpio_deinit(pin_number) })?;
         esp!(unsafe {
@@ -93,7 +92,7 @@ impl<P: InputPin + Pin> PinNotifySubscription<P> {
             )
         })?;
 
-        Ok(Self(pin, callback))
+        Ok(Self(pin_number, callback))
     }
 
     /// Cancel this subscription, deregistering the isr handler and
@@ -101,9 +100,9 @@ impl<P: InputPin + Pin> PinNotifySubscription<P> {
     pub fn unsubscribe(self) {}
 }
 
-impl<P: InputPin + Pin> Drop for PinNotifySubscription<P> {
-    fn drop(self: &mut PinNotifySubscription<P>) {
-        esp!(unsafe { esp_idf_sys::gpio_isr_handler_remove(self.0.pin()) }).expect("Error unsubscribing");
+impl Drop for PinNotifySubscription {
+    fn drop(self: &mut PinNotifySubscription) {
+        esp!(unsafe { esp_idf_sys::gpio_isr_handler_remove(self.0) }).expect("Error unsubscribing");
     }
 }
 
